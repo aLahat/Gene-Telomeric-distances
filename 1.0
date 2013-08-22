@@ -1,0 +1,256 @@
+print('[0] program initialized')
+
+import xlsxwriter
+import os
+
+from pyper import *
+#constants
+
+graphSaveFormat='pdf'
+
+SpreadSheetName = 'Data.xlsx'
+Directory=os.path.dirname(__file__)
+
+#makes a results folder in current directory
+resultsDirectory = Directory + '/results/'
+if not os.path.isdir(resultsDirectory):
+   os.makedirs(resultsDirectory)
+
+#reads a .cvs table of telomere and centromere position from UCSC
+spreadsheet = open('Gap Tables.csv', 'r')
+chrList = spreadsheet.read().splitlines()
+for n in range(len(chrList)):
+    chrList[n]=chrList[n].split(',')
+chrList = chrList[1:]
+#initiates ChrTel (telomeres) and ChrCen (centromeres) dictionaries
+Chromosomes = []
+for i in range(22):
+    Chromosomes.append(str(i + 1))
+Chromosomes.append('X')
+Chromosomes.append('Y')
+ChrTel = {}
+ChrCen = {}
+for i in Chromosomes:
+    ChrTel.update({i: []})
+    ChrCen.update({i: []})
+#Divides data into ChrTel and ChrCen dictionaries
+for j in chrList:
+    if j[-1] == 'telomere':
+        ChrTel[j[0]].append(int(j[1]))
+        ChrTel[j[0]].append(int(j[2]))
+    if j[-1] == 'centromere':
+        ChrCen[j[0]].append(int(j[1]))
+        ChrCen[j[0]].append(int(j[2]))
+for i in ChrTel:
+    ChrTel[i]=sorted(ChrTel[i])
+#removes start and end of chromosomes from ChrTel
+for i in ChrTel:
+    if not(i=='17'):
+        ChrTel[i]=ChrTel[i][1:-1]
+#this adds beguining and end of chromosome 17 as it has small telomeres and
+#are not repredented in the UCSC gap database
+ChrTel['17'].append(0)
+ChrTel['17'].append(78654742)
+
+
+#initiates a R console
+r = R()
+#imports needed libraries
+r('library("affy")')
+r('library("pvclust")')
+r('library("vsn")')
+r('library("AnnotationDbi")')
+
+print('[1] added libraries')
+r('setwd("' + Directory + '")')
+
+print('[2] directories have been set')
+r('pd = read.AnnotatedDataFrame(filename="pData.txt")')
+#Reads affydata
+r('affyData = ReadAffy(phenoData=pd, sampleNames=pd$name)')
+
+
+
+
+
+
+print '[3] affys have been read. attempting to normalize data'
+
+###############################################################################
+# getAnnotationCode(Robject, RaffyData)
+# returns the affy annotation name
+###############################################################################
+
+def getAnnotationCode(Robject, RaffyData):
+    affyMetaData = Robject(RaffyData)
+    annotation_start = affyMetaData.index('annotation=') + 11
+    annotation_end = affyMetaData.index('notes=') - 1
+    annotationCode = affyMetaData[annotation_start:annotation_end]
+    return annotationCode
+#gets the right library
+library = getAnnotationCode(r, 'affyData')
+#r('source("http://bioconductor.org/biocLite.R")')
+r("library('" + library + ".db')")
+#normalization time
+loop = True
+while loop:
+    r('eset = rma(affyData)')
+    print ('[4] graphing data')
+    #Plots and saves a pre/post normalized cluster plot
+    #change x11() line to wondows() or quartz() if under windows or mac
+    r('corClust = pvclust(exprs(affyData), nboot=1, method.dist="correlation")')
+    r('corClustAfter = pvclust(exprs(eset), nboot=1, method.dist="correlation")')
+    r('x11()')
+    r('par(mfrow=c(1,2))')
+    r('plot(corClust, main = "Prenormalized")')
+    r('plot(corClustAfter, main = "Postnormalized")')
+    r('par(mfrow=c(1,1))')
+
+    #asks user what to compare against what and what p crit to use
+
+
+    indexList = r['pData(affyData)']
+    for i in range(len(indexList)):
+        print ('    ' + str(i + 1) + ' ' + str(indexList[i])[1:-1])
+    ignore = raw_input('\n    Ignore any sample? (one at a time)? ')
+    r('dev.off()')
+    if ignore == '':
+        loop = False
+    else:
+        ignoreNum = 1
+        for i in indexList:
+            if ignore == i[2]:
+                break
+            else:
+                ignoreNum += 1
+        print '    ignoring sample number ' + str(ignoreNum)
+        print '[3] renormalizing data'
+        r('affyData<-affyData[-(' + str(ignoreNum) + ')]')
+
+inp = raw_input('    how to compare the samples? (example: 1-3;4-6): ')
+if inp=='':
+    inp = '1-3;4-6'
+inp = inp.split(';')
+inp[0] = inp[0].split('-')
+inp[1] = inp[1].split('-')
+print '    Will compare sample '+inp[0][0]+' to '+inp[0][1]+' against samples '+inp[1][0]+' to '+inp[1][1]+'.'
+
+pCrit = raw_input('    define p-critical (default is 0.05): ')
+if pCrit == '':
+    pCrit = 0.05
+pCrit=float(pCrit)
+print '    P-critical set to '+str(pCrit)
+
+#Plots and saves a prenormalized cluster plot
+r('setwd("' + resultsDirectory + '")')
+r(graphSaveFormat + '("cluster diagrams")')
+r('par(mfrow=c(1,2))')
+r('plot(corClust, main = "Pre-normalized")')
+#plots and saves a postnormalized cluster plot
+r('plot(corClustAfter, main = "Post-normalized")')
+r('par(mfrow=c(1,1))')
+r('dev.off()')
+#writes normalized expression into 'normalized_expression.txt'
+r('write.exprs(eset, file="normalised_expression.txt")')
+
+
+r('Matrix<-exprs(eset)')
+#set R function for t-testing
+r('get.pval.ttest <- function(dataf,index1,index2, datafilter=as.numeric){f <- function(i) {return(t.test(datafilter(dataf[i,index1]), datafilter(dataf[i,index2]))$p.value)}; return(sapply(1:length(dataf[,1]),f))}')
+
+print '[5] initiating t-test'
+#makes t-test  has to be altered to be told which samples to compare to which samples.
+r('pValues <- get.pval.ttest(Matrix,'+inp[0][0]+':'+inp[0][1]+','+inp[1][0]+':'+inp[1][1]+')')
+r('orders <- order(pValues)')
+r('ordered.data <- cbind(rownames(Matrix)[orders],Matrix[orders,],pValues[orders])')
+
+#transfers t-test data to python
+print '[6] t-test completed, transfering data to python'
+
+data = r['ordered.data']
+#data=data.tolist()
+r('probeIdList<-ordered.data')
+r('')
+IDlist = r['probeIdList']
+print '[7] data moved into object: IDlist'
+
+#loop that removes all entries with P above wanted
+
+print '[8] removing all datapoints with higher p critical'
+#IDlist will exctract ID to later send for annotation retrival
+IDlist = []
+PList = []
+#removes all datapoiprint r('pd')nts with large p and appends the probe id to IDlist
+for i in data:
+    #if float(i[-1]) > pCrit:
+        #data.remove(i)
+    if float(i[-1]) <= pCrit:
+        IDlist.append(i[0])
+        PList.append(i[-1])
+trimmedSize = len(IDlist)
+trimmedPercent = 100 * trimmedSize / len(data)
+print '[9] the list is ' + str(trimmedSize) + ' (' + str(trimmedPercent) + '% original size) long'
+
+#retrives annotations by feeding in the trimmed ID list back to R using AnnotationDbi
+print '[10] retriving annotations'
+r('ids <- c("' + '", "'.join(IDlist) + '")')
+r('output<-select(' + library + '.db, ids, c("PROBEID","GENENAME","CHR","CHRLOC","CHRLOCEND"), "PROBEID")')
+r('output[is.na(output)]<-""')
+output = r['output']
+
+
+#modifies the list by calculating the middle of a gene and adding telomere distances
+print('[11] calculating telomere and centromere distances')
+prevID = ''
+PIndex = 0
+#output = output.tolist()
+for i in range(len(output)):
+    #the data is stored in tuples, this changes them to lists to be mutable
+    output[i] = list(output[i])
+    output[i].pop(4)
+    if not (output[i][4]==''):  #only modifies the datapoints where annotation retrival was succesful
+        #calculates and adds the position of the centre of the gene
+        output[i][3], output[i][4] = int(output[i][3]), int(output[i][4])
+        output[i].append((output[i][3] + output[i][4]) / 2)
+        #calculates and adds distance to the closest telomere
+        if not(output[i][2]=='Un'): #some Probe ID return 'Un' chromosome (Unknown)
+            if abs(output[i][5] - ChrTel[output[i][2]][0]) < abs(output[i][5] - ChrTel[output[i][2]][1]):
+                output[i].append(abs(output[i][5] - ChrTel[output[i][2]][0]))
+            else:
+                output[i].append(abs(output[i][5] - ChrTel[output[i][2]][1]))
+            #calculates distance to centromere
+            if abs(output[i][5]-ChrCen[output[i][2]][0])<abs(output[i][5]-ChrCen[output[i][2]][1]):
+                output[i].append(abs(output[i][5]-ChrCen[output[i][2]][0]))
+            else:
+                output[i].append(abs(output[i][5] - ChrCen[output[i][2]][1]))
+    #insetrs the P value
+    if i == 0:
+        prevID = output[i][0]
+        output[i].insert(1, PList[PIndex])
+        PIndex += 1
+    else:
+        if prevID == output[i][0]:
+            output[i].insert(1,PList[PIndex-1])
+        else:
+            output[i].insert(1,PList[PIndex])
+            PIndex += 1
+            prevID = output[i][0]
+
+print('[12] Sending data to spreadsheet '+ SpreadSheetName)
+outputKey = ["Probe-ID", "P-value", "Gene Name", "Chromosome", "Gene start", "Gene end","Gene middle","Distance from telomere","Distance from Centromere"]
+
+# Create a workbook and add a worksheet.
+workbook = xlsxwriter.Workbook(resultsDirectory + SpreadSheetName)
+worksheet = workbook.add_worksheet()
+# Iterate over the data and write it out by iterating through all the rows and columns
+row = 0
+col = 0
+for x in range(len(outputKey)):
+    worksheet.write(0, x, outputKey[x])
+for x in range(len(output)):
+    for y in range(len(output[x])):
+        worksheet.write(x + 1, y, output[x][y])
+
+workbook.close()
+
+print('[13] program completed spreadsheet saved as: '+SpreadSheetName)

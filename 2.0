@@ -1,0 +1,263 @@
+print('[0] program initialized')
+
+###############################################################################
+# tPrint(nesetd list, column_width)
+# Prints a table from a nested list, column_with states the thickness of the
+#column and by default will fit all the contents without trimming
+#a cell closed by a polon '|' means that the content is displayed whole while
+#a cell closed by a slash means that the contents have been trimmed to fit
+#function copied from Pybert module
+###############################################################################
+    print ('\n'+Message)
+    while True:
+        query = raw_input(">>> ")
+        if query == 'end':
+            break
+        try:
+            print eval(query)
+        except Exception,e:
+            print str(e)
+
+def tPrint(NestedList, column_width = 'max len'):
+    if column_width == 'max len':
+        maxlist = []
+        for i in NestedList:
+            linelen = []
+            for j in i:
+                linelen.append(len(str(j)))
+            maxlist.append(max(linelen))
+        column_width = max(maxlist)
+    for i in NestedList:
+        toLine = []
+        for j in i:
+            if len(str(j)) > column_width:
+                toLine.append(str(j)[:column_width] + '\ ')
+            else:
+                toLine.append(str(j) +
+                " " * (column_width - len(str(j))) + '| ')
+        toLine = ''.join(toLine)
+        print(toLine)
+
+
+from pyper import *
+import numpy
+import xlsxwriter
+import os
+#constants
+graphSaveFormat = 'pdf'
+SpreadSheetName = 'Data.xlsx'
+Directory = os.path.dirname(__file__)
+#makes a results folder in current directory
+resultsDirectory = Directory + '/results/'
+if not os.path.isdir(resultsDirectory):
+    os.makedirs(resultsDirectory)
+#reads a .cvs table of telomere and centromere position from UCSC
+spreadsheet = open('Gap Tables.csv', 'r')
+chrList = spreadsheet.read().splitlines()
+for n in range(len(chrList)):
+    chrList[n] = chrList[n].split(',')
+chrList = chrList[1:]
+#initiates ChrTel (telomeres) and ChrCen (centromeres) dictionaries
+Chromosomes = []
+for i in range(22):
+    Chromosomes.append(str(i + 1))
+Chromosomes.append('X')
+Chromosomes.append('Y')
+ChrTel = {}
+ChrCen = {}
+for i in Chromosomes:
+    ChrTel.update({i: []})
+    ChrCen.update({i: []})
+#Divides data into ChrTel and ChrCen dictionaries
+for j in chrList:
+    if j[-1] == 'telomere':
+        ChrTel[j[0]].append(int(j[1]))
+        ChrTel[j[0]].append(int(j[2]))
+    if j[-1] == 'centromere':
+        ChrCen[j[0]].append(int(j[1]))
+        ChrCen[j[0]].append(int(j[2]))
+for i in ChrTel:
+    ChrTel[i]=sorted(ChrTel[i])
+#removes start and end of chromosomes from ChrTel
+for i in ChrTel:
+    if not(i=='17'):
+        ChrTel[i]=ChrTel[i][1:-1]
+#this adds beguining and end of chromosome 17 as it has small telomeres and
+#are not repredented in the UCSC gap database
+ChrTel['17'].append(0)
+ChrTel['17'].append(78654742)
+
+
+r=R(use_numpy = True)
+r('library(simpleaffy)')
+r('library(affy)')
+print('[1] added libraries')
+##reading files
+r('setwd("' + Directory + '")')
+print('[2] directories have been set')
+r('pd <- read.AnnotatedDataFrame(filename="pData.txt")')
+r('filenames <- rownames(pData(pd))')
+r('affyData <- ReadAffy(filenames=filenames, phenoData=pd, sampleNames=pd$name)')
+print '[3] affys have been read. attempting to normalize data'
+
+###############################################################################
+# getAnnotationCode(Robject, RaffyData)
+# returns the affy annotation name
+###############################################################################
+
+def getAnnotationCode(Robject, RaffyData):
+    affyMetaData = Robject(RaffyData)
+    annotation_start = affyMetaData.index('annotation=') + 11
+    annotation_end = affyMetaData.index('notes=') - 1
+    annotationCode = affyMetaData[annotation_start:annotation_end]
+    return annotationCode
+
+#gets the right library
+library = getAnnotationCode(r, 'affyData')
+#r('source("http://bioconductor.org/biocLite.R")')
+r("library('" + library + ".db')")
+##normalizing
+loop = True
+while loop:
+    r('step <- rma(affyData)')
+    r('eset <- exprs(step) ')
+
+    ## plotting
+    r('library("pvclust")')
+    r('corClust = pvclust(exprs(affyData), nboot=1, method.dist="correlation")')
+    r('corClustAfter = pvclust(exprs(step), nboot=1, method.dist="correlation")')
+    #Plots and saves a pre/post normalized cluster plot
+    #change x11() line to wondows() or quartz() if under windows or mac
+    r('x11()')
+    r('par(mfrow=c(1,2))')
+    r('plot(corClust, main = "Prenormalized", )')
+    r('plot(corClustAfter, main = "Postnormalized")')
+    r('par(mfrow=c(1,1))')
+    #asks user what to compare against what and what p crit to use
+    indexList = [list(r['colnames(pData(affyData))'])]
+    indexList = indexList + (list(r['pData(affyData)']))
+    for i in range(len(indexList)):
+        indexList[i] = list(indexList[i])
+        indexList[i].insert(0,'    ' + str(i))
+    indexList[0][0] = ''
+    tPrint(indexList)
+    ignore = raw_input('\n Ignore any sample <name>? ')
+    r('dev.off()')
+    if ignore == '':
+        loop = False
+    else:
+        ignoreNum = 1
+        for i in indexList:
+            if ignore == i[2]:
+                break
+            else:
+                ignoreNum += 1
+        print ' ignoring sample number ' + str(ignoreNum-2)
+        print '[3] renormalizing data'
+        r('affyData <- affyData[,-(' + str(ignoreNum-2) + ')]')
+#Plots and saves a prenormalized cluster plot
+r('setwd("' + resultsDirectory + '")')
+r(graphSaveFormat + '("cluster diagrams")')
+r('par(mfrow=c(1,2))')
+r('plot(corClust, main = "Pre-normalized")')
+#plots and saves a postnormalized cluster plot
+r('plot(corClustAfter, main = "Post-normalized")')
+r('par(mfrow=c(1,1))')
+r('dev.off()')
+#writes normalized expression into 'normalized_expression.txt'
+r('write.exprs(eset, file="normalised_expression.txt")')
+
+inp = raw_input(' how to compare the samples <type separated by comma>?: ')
+if inp == '':
+    inp = 'young,irradiated'
+inp = inp.split(',')
+SpreadSheetName = ' Vs '.join(inp) + '.xlsx'
+print ' Will compare  '+inp[0]+' samples against '+inp[1]+' samples.'
+pCrit = raw_input(' define p-critical (default is 0.05): ')
+if pCrit == '':
+    pCrit = '0.05'
+#t test and filtering
+r('results<-pairwise.comparison(step, "type", c("' + inp[0] + '","' + inp[1] + '")) ')  ## ttest
+r('significant<-pairwise.filter(results, tt=' + pCrit + ') ')  ##filtering
+r('FC<-significant@means[,2]/significant@means[,1]')
+## getting anotations
+r('probes <- rownames(significant@means)')
+r('symbols <- mget(probes,' + library + 'SYMBOL,ifnotfound=NA)')
+r('chr <- mget(probes, ' + library + 'CHR, ifnotfound = NA)')
+r('chrloc <- mget(probes, ' + library + 'CHRLOC, ifnotfound = NA)')
+r('chrend <- mget(probes, ' + library + 'CHRLOCEND, ifnotfound = NA)')
+r('descriptions <- mget(probes,' + library + 'GENENAME,ifnotfound=NA)')
+def toList(dict):
+    tolist=[]
+    err=1
+    for i in dict:
+        try:
+            tolist.append(dict[i])
+        except:
+            tolist.append('err: '+str(err))
+            err+=1
+    return tolist
+print '[4] pythonating R data'
+probes = list(r['probes'])
+symbols = toList(r['symbols'])
+chr = toList(r['chr'])
+chrloc = toList(r['chrloc'])
+chrend = toList(r['chrend'])
+description = toList(r['descriptions'])
+P = list(r['significant@tt'])
+FC= r['FC']
+output = []
+for i in range(len(probes)):
+    output.append([])
+    output[-1].append(probes[i])
+    output[-1].append(P[i])
+    output[-1].append(FC[i])
+    output[-1].append(symbols[i])
+    output[-1].append(description[i])
+    output[-1].append(chr[i])
+    if_int=False
+    if type(chrloc[i]) == int:
+        if_int=True
+        output[-1].append(chrloc[i])
+        output[-1].append(chrend[i])
+        #adds middle of gene
+        output[-1].append(abs(abs(chrloc[i])+abs(chrend[i]))/2)
+        #adds telomeres and centromere distances
+        telDist = [abs(output[-1][8] - ChrTel[str(output[-1][5])][0]), abs(output[-1][8] - ChrTel[output[-1][5]][1])]
+        output[-1].append(min(telDist))
+        cenDist = [abs(output[-1][8] - ChrCen[str(output[-1][5])][0]), abs(output[-1][8] - ChrCen[output[-1][5]][1])]
+        output[-1].append(min(cenDist))
+    elif type(chrloc[i]) == numpy.ndarray:
+        for n in range(len(chrloc[i])):
+            if not(n==0):
+                output.append(output[-1][:-5])
+            output[-1].append(chrloc[i][n])
+            output[-1].append(chrend[i][n])
+            #adds middle of gene
+            output[-1].append(abs(abs(output[-1][6])+abs(output[-1][7]))/2)
+            #adds telomeres and centromere distances
+            telDist = [abs(output[-1][8] - ChrTel[str(output[-1][5])][0]), abs(output[-1][8] - ChrTel[output[-1][5]][1])]
+            output[-1].append(min(telDist))
+            cenDist = [abs(output[-1][8] - ChrCen[str(output[-1][5])][0]), abs(output[-1][8] - ChrCen[output[-1][5]][1])]
+            output[-1].append(min(cenDist))
+
+outputKey = ["Probe-ID", "P-value", "Log2(FC)", "Symbol", "Description",
+     "Chromosome", "Gene Start", "Gene End", "Gene middle",
+     "Distance from telomere","Distance from Centromere"]
+
+# Create a workbook and add a worksheet.
+workbook = xlsxwriter.Workbook(resultsDirectory + SpreadSheetName)
+worksheet = workbook.add_worksheet()
+# Iterate over the data and write it out by iterating through all the rows and columns
+row = 0
+col = 0
+#writes the key
+for x in range(len(outputKey)):
+    worksheet.write(0, x, outputKey[x])
+#writes the table
+for x in range(len(output)):
+    for y in range(len(output[x])):
+        worksheet.write(x + 1, y, (output[x][y]))
+workbook.close()
+print('[5] program completed spreadsheet saved as: "' + SpreadSheetName + '"')
+
